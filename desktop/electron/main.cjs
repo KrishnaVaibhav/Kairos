@@ -56,6 +56,26 @@ function pythonExe() {
   return fs.existsSync(venvPython) ? venvPython : (process.platform === "win32" ? "python" : "python3");
 }
 
+function packagedBackendPath() {
+  return path.join(process.resourcesPath, "backend", "server" + EXE);
+}
+
+function validatePackagedBackend() {
+  if (!app.isPackaged) return { ok: true };
+  const backendExe = packagedBackendPath();
+  if (fs.existsSync(backendExe)) return { ok: true };
+  return {
+    ok: false,
+    message: [
+      "Kairos backend binary was not bundled into this installer.",
+      "Expected:",
+      `  ${backendExe}`,
+      "",
+      "Rebuild installer after freezing backend and bundling extra resources.",
+    ].join("\n"),
+  };
+}
+
 function configPath() {
   if (app.isPackaged) return path.join(app.getPath("userData"), "config.json");
   return path.join(BACKEND_ROOT, "config.json");
@@ -155,7 +175,7 @@ function startBackend() {
     // electron-builder's extraResources under resourcesPath. User data
     // (config/resume/db) lives in the OS per-user data dir, never inside the
     // read-only installed app folder.
-    const backendExe = path.join(process.resourcesPath, "backend", "server" + EXE);
+    const backendExe = packagedBackendPath();
     backendProcess = spawn(backendExe, [], {
       cwd: path.dirname(backendExe),
       stdio: ["ignore", "pipe", "pipe"],
@@ -175,6 +195,13 @@ function startBackend() {
       env: { ...process.env, TUNNEL_TOKEN: MOBILE_TOKEN },
     });
   }
+  backendProcess.on("error", (e) => {
+    const detail = app.isPackaged
+      ? `Failed to launch bundled backend (${packagedBackendPath()}): ${e.message}`
+      : `Failed to launch backend (${pythonExe()}): ${e.message}`;
+    console.error(detail);
+    dialog.showErrorBox("Kairos backend failed to start", detail);
+  });
   backendProcess.stdout.on("data", (d) => process.stdout.write(`[backend] ${d}`));
   backendProcess.stderr.on("data", (d) => process.stderr.write(`[backend] ${d}`));
   backendProcess.on("exit", (code) => {
@@ -378,6 +405,12 @@ ipcMain.handle("app:prefs:set", (_event, patch = {}) => {
 });
 
 app.whenReady().then(() => {
+  const check = validatePackagedBackend();
+  if (!check.ok) {
+    dialog.showErrorBox("Kairos packaging error", check.message);
+    app.quit();
+    return;
+  }
   loadDesktopPrefs();
   if (hasDesktopPrefsInConfig) applyStartOnStartup(desktopPrefs.start_on_startup);
   ensureTray();

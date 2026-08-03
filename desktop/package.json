@@ -11,8 +11,9 @@
     "preview": "vite preview",
     "electron": "electron .",
     "start": "concurrently -k -n VITE,ELECTRON -c blue,green \"vite\" \"wait-on tcp:5173 && electron .\"",
-    "dist:win": "npm run build && electron-builder --win",
-    "dist:mac": "npm run build && electron-builder --mac"
+    "prepack:verify": "node scripts/verify-packaging-resources.cjs",
+    "dist:win": "npm run prepack:verify && npm run build && electron-builder --win",
+    "dist:mac": "npm run prepack:verify && npm run build && electron-builder --mac"
   },
   "build": {
     "appId": "com.snehpatel.jobscraper",

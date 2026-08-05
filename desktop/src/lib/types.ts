@@ -177,6 +177,7 @@ export interface Config {
     fuzzy_dedup: boolean;
   };
   scheduler?: { enabled: boolean; time: string; autopilot?: boolean };
+  desktop?: { run_in_background: boolean; start_on_startup: boolean };
   [key: string]: unknown;
 }
 

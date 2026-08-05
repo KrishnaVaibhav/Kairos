@@ -3,7 +3,7 @@ import type { Dispatch, SetStateAction } from "react";
 import { api } from "../lib/api";
 import type { Config } from "../lib/types";
 
-type Tab = "model" | "api-keys" | "prompts" | "scheduler";
+type Tab = "model" | "api-keys" | "prompts" | "scheduler" | "desktop";
 
 export default function Settings() {
   const [config, setConfig] = useState<Config | null>(null);
@@ -12,7 +12,28 @@ export default function Settings() {
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
   useEffect(() => {
-    api.getConfig().then(setConfig);
+    api.getConfig().then((cfg) => {
+      const desktop = cfg.desktop ?? { run_in_background: false, start_on_startup: false };
+      setConfig({ ...cfg, desktop });
+      if (window.desktop?.app?.getPrefs) {
+        window.desktop.app
+          .getPrefs()
+          .then((prefs) => {
+            setConfig((prev) => {
+              if (!prev) return prev;
+              const prevDesktop = prev.desktop ?? { run_in_background: false, start_on_startup: false };
+              return {
+                ...prev,
+                desktop: {
+                  run_in_background: prevDesktop.run_in_background,
+                  start_on_startup: prefs.startOnStartup,
+                },
+              };
+            });
+          })
+          .catch(() => {});
+      }
+    });
   }, []);
 
   async function save() {
@@ -20,6 +41,13 @@ export default function Settings() {
     setSaving(true);
     try {
       await api.putConfig(config);
+      if (window.desktop?.app?.setPrefs) {
+        const d = config.desktop ?? { run_in_background: false, start_on_startup: false };
+        await window.desktop.app.setPrefs({
+          runInBackground: !!d.run_in_background,
+          startOnStartup: !!d.start_on_startup,
+        });
+      }
       setSavedAt(Date.now());
     } finally {
       setSaving(false);
@@ -47,7 +75,7 @@ export default function Settings() {
       </div>
 
       <div className="flex border-b border-border">
-        {(["model", "api-keys", "prompts", "scheduler"] as Tab[]).map((t) => (
+        {(["model", "api-keys", "prompts", "scheduler", "desktop"] as Tab[]).map((t) => (
           <TabButton key={t} active={tab === t} onClick={() => setTab(t)} label={t === "api-keys" ? "API keys" : t} />
         ))}
       </div>
@@ -56,6 +84,7 @@ export default function Settings() {
       {tab === "api-keys" && <ApiKeysTab />}
       {tab === "prompts" && <PromptsTab config={config} setConfig={setConfig} />}
       {tab === "scheduler" && <SchedulerTab config={config} setConfig={setConfig} />}
+      {tab === "desktop" && <DesktopTab config={config} setConfig={setConfig} />}
     </div>
   );
 }
@@ -182,6 +211,39 @@ function SchedulerTab({ config, setConfig }: { config: Config; setConfig: Setter
         Automatically run the scraper every day
       </label>
       <LabeledInput label="Time (24h, local)" value={sched.time} onChange={(v) => set({ time: v })} />
+    </div>
+  );
+}
+
+function DesktopTab({ config, setConfig }: { config: Config; setConfig: Setter }) {
+  const desktop = config.desktop ?? { run_in_background: false, start_on_startup: false };
+  const set = (patch: Partial<{ run_in_background: boolean; start_on_startup: boolean }>) =>
+    setConfig({ ...config, desktop: { ...desktop, ...patch } });
+
+  return (
+    <div className="flex flex-col gap-4 max-w-2xl">
+      <p className="text-xs text-muted">
+        Desktop-only behavior. Mobile app behavior is unchanged.
+      </p>
+      <label className="flex items-center gap-2 text-sm text-fg-soft">
+        <input
+          type="checkbox"
+          checked={desktop.run_in_background}
+          onChange={(e) => set({ run_in_background: e.target.checked })}
+        />
+        Run in background when window is closed (hide to tray)
+      </label>
+      <label className="flex items-center gap-2 text-sm text-fg-soft">
+        <input
+          type="checkbox"
+          checked={desktop.start_on_startup}
+          onChange={(e) => set({ start_on_startup: e.target.checked })}
+        />
+        Start Kairos when you sign in
+      </label>
+      <p className="text-xs text-muted">
+        Changes apply after you click <strong className="text-fg-soft">Save changes</strong>.
+      </p>
     </div>
   );
 }

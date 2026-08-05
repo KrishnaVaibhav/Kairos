@@ -11,6 +11,11 @@ interface Window {
   desktop?: {
     getBackendUrl: () => Promise<string>;
     pickFolder: () => Promise<string | null>;
+    app: {
+      getPrefs: () => Promise<{ runInBackground: boolean; startOnStartup: boolean }>;
+      setPrefs: (patch: { runInBackground?: boolean; startOnStartup?: boolean }) =>
+        Promise<{ runInBackground: boolean; startOnStartup: boolean }>;
+    };
     mobile: {
       start: () => Promise<MobileStatus>;
       stop: () => Promise<MobileStatus>;

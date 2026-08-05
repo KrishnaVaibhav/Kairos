@@ -1,6 +1,6 @@
 // Electron main process: spawns the Python/FastAPI backend, waits for it to
 // be healthy, then opens the window. Kills the backend on quit.
-const { app, BrowserWindow, ipcMain, shell, dialog } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, nativeImage } = require("electron");
 const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
@@ -22,6 +22,15 @@ app.setName("Job Scraper");
 
 let backendProcess = null;
 let mainWindow = null;
+let tray = null;
+let isQuitting = false;
+let hasDesktopPrefsInConfig = false;
+
+const DESKTOP_PREF_DEFAULTS = {
+  run_in_background: false,
+  start_on_startup: false,
+};
+let desktopPrefs = { ...DESKTOP_PREF_DEFAULTS };
 
 // Per-install shared secret for mobile tunnel traffic. Generated once on first
 // run, persisted in userData, reused after. The backend checks it
@@ -47,6 +56,118 @@ function pythonExe() {
   return fs.existsSync(venvPython) ? venvPython : (process.platform === "win32" ? "python" : "python3");
 }
 
+function packagedBackendPath() {
+  return path.join(process.resourcesPath, "backend", "server" + EXE);
+}
+
+function validatePackagedBackend() {
+  if (!app.isPackaged) return { ok: true };
+  const backendExe = packagedBackendPath();
+  if (fs.existsSync(backendExe)) return { ok: true };
+  return {
+    ok: false,
+    message: [
+      "Kairos backend binary was not bundled into this installer.",
+      "Expected:",
+      `  ${backendExe}`,
+      "",
+      "Rebuild installer after freezing backend and bundling extra resources.",
+    ].join("\n"),
+  };
+}
+
+function configPath() {
+  if (app.isPackaged) return path.join(app.getPath("userData"), "config.json");
+  return path.join(BACKEND_ROOT, "config.json");
+}
+
+function loadDesktopPrefs() {
+  try {
+    const raw = fs.readFileSync(configPath(), "utf-8");
+    const cfg = JSON.parse(raw);
+    const d = cfg?.desktop ?? {};
+    hasDesktopPrefsInConfig = !!cfg?.desktop;
+    desktopPrefs = {
+      run_in_background: !!d.run_in_background,
+      start_on_startup: !!d.start_on_startup,
+    };
+  } catch {
+    hasDesktopPrefsInConfig = false;
+    desktopPrefs = { ...DESKTOP_PREF_DEFAULTS };
+  }
+}
+
+function applyStartOnStartup(enabled) {
+  if (process.platform !== "win32" && process.platform !== "darwin") return false;
+  app.setLoginItemSettings({ openAtLogin: !!enabled });
+  return true;
+}
+
+function getStartOnStartup() {
+  if (process.platform !== "win32" && process.platform !== "darwin") return false;
+  return !!app.getLoginItemSettings().openAtLogin;
+}
+
+function trayIconPath() {
+  const candidates = app.isPackaged
+    ? [
+        path.join(process.resourcesPath, "resume-icons", "map-marker.png"),
+      ]
+    : [
+        path.join(__dirname, "..", "build-resources", "resume-icons", "map-marker.png"),
+      ];
+  return candidates.find((p) => fs.existsSync(p)) || null;
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  mainWindow.setSkipTaskbar(false);
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function hideMainWindowToTray() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.setSkipTaskbar(true);
+  mainWindow.hide();
+}
+
+async function ensureTray() {
+  if (tray) return;
+  let img = null;
+  try {
+    // Prefer the executable/app icon so tray matches the installed app branding.
+    img = await app.getFileIcon(process.execPath, { size: "small" });
+  } catch {
+    img = null;
+  }
+  if (!img || img.isEmpty()) {
+    const iconPath = trayIconPath();
+    if (!iconPath) return;
+    img = nativeImage.createFromPath(iconPath);
+  }
+  if (!img || img.isEmpty()) return;
+  tray = new Tray(img);
+  tray.setToolTip("Kairos");
+  tray.on("click", showMainWindow);
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: "Open Kairos", click: showMainWindow },
+      {
+        label: "Quit",
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        },
+      },
+    ])
+  );
+}
+
 function startBackend() {
   MOBILE_TOKEN = mobileToken();
   if (app.isPackaged) {
@@ -54,7 +175,7 @@ function startBackend() {
     // electron-builder's extraResources under resourcesPath. User data
     // (config/resume/db) lives in the OS per-user data dir, never inside the
     // read-only installed app folder.
-    const backendExe = path.join(process.resourcesPath, "backend", "server" + EXE);
+    const backendExe = packagedBackendPath();
     backendProcess = spawn(backendExe, [], {
       cwd: path.dirname(backendExe),
       stdio: ["ignore", "pipe", "pipe"],
@@ -74,6 +195,13 @@ function startBackend() {
       env: { ...process.env, TUNNEL_TOKEN: MOBILE_TOKEN },
     });
   }
+  backendProcess.on("error", (e) => {
+    const detail = app.isPackaged
+      ? `Failed to launch bundled backend (${packagedBackendPath()}): ${e.message}`
+      : `Failed to launch backend (${pythonExe()}): ${e.message}`;
+    console.error(detail);
+    dialog.showErrorBox("Kairos backend failed to start", detail);
+  });
   backendProcess.stdout.on("data", (d) => process.stdout.write(`[backend] ${d}`));
   backendProcess.stderr.on("data", (d) => process.stderr.write(`[backend] ${d}`));
   backendProcess.on("exit", (code) => {
@@ -116,6 +244,18 @@ async function createWindow() {
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: "deny" };
+  });
+
+  mainWindow.on("close", (event) => {
+    if (isQuitting) return;
+    if (!desktopPrefs.run_in_background) return;
+    event.preventDefault();
+    hideMainWindowToTray();
+  });
+
+  mainWindow.on("show", () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.setSkipTaskbar(false);
   });
 
   try {
@@ -245,12 +385,41 @@ ipcMain.handle("dialog:pick-folder", async () => {
   return result.canceled ? null : result.filePaths[0];
 });
 
+ipcMain.handle("app:prefs:get", () => ({
+  runInBackground: !!desktopPrefs.run_in_background,
+  startOnStartup: getStartOnStartup(),
+}));
+
+ipcMain.handle("app:prefs:set", (_event, patch = {}) => {
+  if (typeof patch.runInBackground === "boolean") {
+    desktopPrefs.run_in_background = patch.runInBackground;
+  }
+  if (typeof patch.startOnStartup === "boolean") {
+    desktopPrefs.start_on_startup = patch.startOnStartup;
+    applyStartOnStartup(patch.startOnStartup);
+  }
+  return {
+    runInBackground: !!desktopPrefs.run_in_background,
+    startOnStartup: getStartOnStartup(),
+  };
+});
+
 app.whenReady().then(() => {
+  const check = validatePackagedBackend();
+  if (!check.ok) {
+    dialog.showErrorBox("Kairos packaging error", check.message);
+    app.quit();
+    return;
+  }
+  loadDesktopPrefs();
+  if (hasDesktopPrefsInConfig) applyStartOnStartup(desktopPrefs.start_on_startup);
+  ensureTray();
   startBackend();
   createWindow();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    else showMainWindow();
   });
 });
 
@@ -259,9 +428,14 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  isQuitting = true;
   stopMobile();
   if (backendProcess) {
     backendProcess.kill();
     backendProcess = null;
+  }
+  if (tray) {
+    tray.destroy();
+    tray = null;
   }
 });

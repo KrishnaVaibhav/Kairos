@@ -38,6 +38,20 @@ for (const c of checks) {
 	}
 }
 
+// PyInstaller bundles config.example.json verbatim (server.spec datas=[...]) —
+// a syntax error here ships silently and only surfaces as a broken first-run
+// config seed on the user's machine, so catch it at package time instead.
+const configExamplePath = path.join(root, "config.example.json");
+if (exists(configExamplePath)) {
+	try {
+		JSON.parse(fs.readFileSync(configExamplePath, "utf-8"));
+	} catch (e) {
+		fail(`config.example.json is not valid JSON: ${e.message}\nPath: ${configExamplePath}`);
+	}
+} else {
+	fail(`Missing config.example.json (bundled as the first-run config seed).\nExpected path: ${configExamplePath}`);
+}
+
 if (process.exitCode) {
 	console.error("\n[packaging-check] Aborting packaging due to missing resources.");
 	process.exit(process.exitCode);

@@ -44,7 +44,10 @@ function mobileToken() {
     if (existing) return existing;
   } catch { /* first run */ }
   const t = crypto.randomBytes(32).toString("base64url");
-  fs.writeFileSync(f, t);
+  // 0o600: owner read/write only — this token authenticates tunnel traffic,
+  // shouldn't be world-readable on multi-user machines (Windows ACLs ignore
+  // the mode bits, but it's a correct no-op there rather than a no-only).
+  fs.writeFileSync(f, t, { mode: 0o600 });
   return t;
 }
 let MOBILE_TOKEN = null; // set in startBackend (needs app to be ready)
@@ -97,13 +100,44 @@ function loadDesktopPrefs() {
   }
 }
 
+// app.setLoginItemSettings only covers macOS/Windows (Electron docs: @platform
+// darwin,win32) — Linux has no equivalent API, so we write/remove a
+// freedesktop.org autostart .desktop entry ourselves instead of silently
+// no-op'ing the checkbox.
+function linuxAutostartPath() {
+  return path.join(app.getPath("home"), ".config", "autostart", "kairos.desktop");
+}
+
 function applyStartOnStartup(enabled) {
+  if (process.platform === "linux") {
+    const p = linuxAutostartPath();
+    if (enabled) {
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      const entry = [
+        "[Desktop Entry]",
+        "Type=Application",
+        "Name=Kairos",
+        `Exec=${JSON.stringify(process.execPath)}`,
+        "X-GNOME-Autostart-enabled=true",
+        "Hidden=false",
+        "Terminal=false",
+        "",
+      ].join("\n");
+      fs.writeFileSync(p, entry, { mode: 0o644 });
+    } else {
+      try {
+        fs.unlinkSync(p);
+      } catch { /* wasn't set */ }
+    }
+    return true;
+  }
   if (process.platform !== "win32" && process.platform !== "darwin") return false;
   app.setLoginItemSettings({ openAtLogin: !!enabled });
   return true;
 }
 
 function getStartOnStartup() {
+  if (process.platform === "linux") return fs.existsSync(linuxAutostartPath());
   if (process.platform !== "win32" && process.platform !== "darwin") return false;
   return !!app.getLoginItemSettings().openAtLogin;
 }

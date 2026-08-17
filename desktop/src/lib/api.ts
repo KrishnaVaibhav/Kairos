@@ -26,7 +26,17 @@ export const api = {
   health: () => request<{ ok: boolean }>("/api/health"),
 
   getConfig: () => request<Config>("/api/config"),
-  putConfig: (cfg: Config) => request("/api/config", { method: "PUT", body: JSON.stringify(cfg) }),
+  // api_keys is dropped here on purpose: it's managed exclusively via
+  // /api/ollama-key(s). Callers (Setup wizard, Settings page) hold a copy of
+  // it fetched at page-load time, which goes stale the moment a key is saved
+  // through those dedicated endpoints — sending it back would race and wipe
+  // out a key just saved concurrently. The server preserves the current
+  // value whenever api_keys is absent from the payload.
+  putConfig: (cfg: Config) => {
+    const rest = { ...cfg };
+    delete rest.api_keys;
+    return request("/api/config", { method: "PUT", body: JSON.stringify(rest) });
+  },
 
   getOllamaKeyStatus: () => request<{ is_set: boolean }>("/api/ollama-key"),
   setOllamaKey: (apiKey: string) =>

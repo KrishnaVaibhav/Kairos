@@ -100,7 +100,14 @@ def get_prompt(key: str, default: str) -> str:
 def save_config(new_cfg: dict):
     """Persists to config.json and updates the in-memory CONFIG in place, so
     graphs built after this call (each `scrape`/`apply` run builds fresh) pick
-    up the change without a process restart."""
+    up the change without a process restart.
+
+    Copies new_cfg first: save_ollama_key/save_ollama_keys call this as
+    save_config(CONFIG) (same object as the global below), and CONFIG.clear()
+    followed by CONFIG.update(new_cfg) is a no-op when new_cfg IS CONFIG —
+    clear() empties both at once, so update() has nothing left to copy from,
+    wiping the whole in-memory config until the next process restart."""
+    new_cfg = dict(new_cfg)
     with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(new_cfg, f, indent=2, ensure_ascii=False)
     CONFIG.clear()
